@@ -311,6 +311,143 @@ Pragma: no-cache
 }
 ```
 
+## Example using the `authorization_code` grant type
+
+Authorization code grant type is common to implement. It's advantage is that the client application never has access or 
+needs to save your users username and password. Instead any application will login on your site and be redirected back
+to the app after the user has explicitly granted access.
+
+### Setup
+
+To support this grant type you must ensure that your models implement the necessary model methods as documented above.
+Of special importance is that the `getClient` method returns the "redirectUri" value.
+
+First, setup the authorize route. If logged in then it will show the authorize page. This page will typically give 
+the user the option to grant or deny access the requesting app. If not logged in the user will be sent to the login page.
+
+```
+app.get('/oauth/authorize', function (req, res) {
+    if (!req.session.user) {
+        // If they aren't logged in, send them to your own login implementation
+        return res.redirect('/oauth/login?redirect=' + req.path + '&client_id=' +
+        req.query.client_id + '&redirect_uri=' + req.query.redirect_uri);
+    }
+
+    oauthModel.getClientById(req.query.client_id, function(err, clientRecord){
+        res.render('oauth/authorize', {
+            clientId: req.query.client_id,
+            redirectUri: req.query.redirect_uri,
+            appName: clientRecord.client_name       // Name of the app
+        });
+    });
+});
+```
+
+Next, setup the login route, as mentioned this route will be redirected from GET/authorize if the user is not authenticated. In this
+case it is assumed that the login route is being used both for rendering the form and handling it's submission. You'll 
+notice after a successful login the user will be sent back to GET/authorize.
+
+```
+app.get('/oauth/login', function (req, res) {
+    
+    res.render('oauth/login', {
+        clientId: req.query.client_id,
+        redirectUri: req.query.redirect_uri
+    });
+});
+```
+
+Next, create the POST/authorize route. This route handles the path from GET/authorize when the user is authenticated.
+This route should be passed the client_id and redirect_uri (either through POSTS or GET). In addition, through POST,
+it should be passed the the variable of ALLOW, which should be true or false (using this example).
+
+```
+// Handle authorize
+app.post('/oauth/authorize', function (req, res, next) {
+    if (!req.session.user) {
+        return res.redirect('/oauth/login?client_id=' + req.query.client_id +
+        '&redirect_uri=' + req.query.redirect_uri);
+    }
+
+    next();
+}, app.oauth.authCodeGrant(function (req, next) {
+    // The first param should to indicate an error
+    // The second param should a bool to indicate if the user did authorize the app
+    // The third param should for the user/uid (only used for passing to saveAuthCode)
+    next(null, req.body.allow, req.session.user.id);
+}));
+```
+
+If successful the a new auth code record will be created and the grant code will be sent to the redirect_uri value. After
+the consuming application has the grant code they will use it (before the auth code record expires) to get a token. The
+token handler should be like this:
+
+```
+app.all('/oauth/token', app.oauth.grant());
+```
+
+The middleware provides all the capability needed to handle getting a token.
+
+### Usage
+
+The following shows quickly how the process of using the new routes works.
+
+First, a call will be made to the GET/authorize endpoint with the following request:
+
+```
+GET /oauth/authorize?client_id=26eeeb16-1b33-40e0-aaac-53d14e742a94&scope=&state=121959&redirect_uri=https://www.mycallback.com/oauth2/callback&response_type=code HTTP/1.1
+Host: server.example.com
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Encoding: gzip, deflate, sdch
+Accept-Language: en-US,en;q=0.8
+```
+
+As this is the first time the user the oauth 2 server will redirect the call to the login page. Once the user provides
+the correct credentials the user should be sent back to authorize. As the user is now logged in they will be presented
+with an authorization screen of your making. It should ask the user if they want to grant access or not. Assuming the 
+user grants access the request will look something similar to this:
+
+```
+POST /oauth/authorize?client_id=26eeeb16-1b33-40e0-aaac-53d14e742a94&redirect_uri=https://www.mycallback.com/oauth2/callback&response_type=code HTTP/1.1
+Host: server.example.com
+Accept: application/json, text/javascript, */*; q=0.01
+X-Requested-With: XMLHttpRequest
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+Accept-Encoding: gzip, deflate
+Accept-Language: en-US,en;q=0.8
+Cookie: session.cookie
+
+allow=true&response_type=code
+```
+Assuming all is okay with the request a new auth code record is created and the consuming application will be redirected 
+to the redirect_uri with the cod attached
+
+```
+https://www.mycallback.com/oauth2/callback&response_type=code&code=ca313597a932cebed857f588942b8ff896c4ddb8
+```
+
+Now the consuming application should request a token to get access to your api like the following:
+ 
+```
+POST /oauth/token HTTP/1.1
+Host: server.example.com
+Accept: */*
+Accept-Encoding: gzip, deflate
+Accept-Language: en-US,en;q=0.8
+
+code=42a0465166dd6252a4e7f3f345ddb5d4d6905b193&grant_type=authorization_code&client_id=26eeeb16-1c33-42e2-aaac-53d14e742a94&client_secret=40f54704-dbd8-4779-abac-0830f747d48c
+```
+
+And should get a response like the following, with the token (with the options refresh token):
+
+ ```
+ HTTP/1.1 200 OK
+ X-Powered-By: Express
+
+ 
+ {"token_type":"bearer","access_token":"e88aefddd2ca8c7517f30f0bbcabasdfd2ae5e51e","expires_in":86400,"refresh_token":"7c116f36e3e75b479b51c3f550e9b1d7fd6955b0"}
+ ```
+
 ## Changelog
 
 See: https://github.com/thomseddon/node-oauth2-server/blob/master/Changelog.md
